@@ -74,6 +74,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || "Lỗi server nội bộ" });
 });
 
+app.get("/", (req, res) => {
+  res.send("✅ Backend server is running successfully!");
+});
+
 // ✅ Khởi động server
 server.listen(PORT, () => {
   console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);

@@ -2,20 +2,29 @@ const ProductService = require("../services/ProductService");
 
 module.exports = {
   index: async (req, res, next) => {
-    try {
-      const { search = "", category = "", sortBy = "name", sortOrder = "asc" } = req.query;
-      const sort = { [sortBy]: sortOrder === "desc" ? -1 : 1 };
-      const filter = {};
+  try {
+    const { search = "", category = "", sortBy = "name", sortOrder = "asc" } = req.query;
+    const sort = { [sortBy]: sortOrder === "desc" ? -1 : 1 };
+    const filter = {};
 
-      if (search) filter.name = { $regex: search, $options: "i" };
-      if (category) filter.category = category;
+    if (search) filter.name = { $regex: search, $options: "i" };
+    if (category) filter.category = category;
 
-      const products = await ProductService.getAllProducts(0, 0, sort, filter);
-      res.json({ data: products });
-    } catch (err) {
-      next(err);
-    }
-  },
+    let products = await ProductService.getAllProducts(0, 0, sort, filter);
+
+    // ✅ Thêm domain đầy đủ cho ảnh
+    const host = `${req.protocol}://${req.get("host")}`;
+    products = products.map((p) => ({
+      ...p._doc,
+      image: p.image?.startsWith("http") ? p.image : `${host}/uploads/${p.image}`,
+    }));
+
+    res.json({ data: products });
+  } catch (err) {
+    next(err);
+  }
+},
+
 
   show: async (req, res, next) => {
     try {

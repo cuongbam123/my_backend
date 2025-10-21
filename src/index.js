@@ -48,7 +48,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // 🧩 Cấu hình phục vụ ảnh tĩnh (uploads)
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 
 // 🧩 Kết nối MongoDB
 mongoose

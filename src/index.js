@@ -23,11 +23,17 @@ const PORT = process.env.PORT || 3001;
 
 // ✅ Cấu hình middleware **trước khi gọi routes**
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3002", "https://hrucosmetics.kesug.com"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:3002",
+    "https://hrucosmetics.kesug.com"
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 }));
 
+// ✅ Xử lý preflight request (OPTIONS)
 app.options("*", cors());
 app.use(express.json()); // ✅ để đọc body JSON
 app.use(express.urlencoded({ extended: true })); // ✅ để đọc form-data urlencoded
@@ -77,6 +83,10 @@ app.use((err, req, res, next) => {
 
 app.get("/", (req, res) => {
   res.send("✅ Backend server is running successfully!");
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("🔥 Uncaught Exception:", err);
 });
 
 // ✅ Khởi động server

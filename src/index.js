@@ -23,11 +23,12 @@ const PORT = process.env.PORT || 3001;
 
 // ✅ Cấu hình middleware **trước khi gọi routes**
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3002"],
+  origin: ["http://localhost:3000", "http://localhost:3002", "https://hrucosmetics.kesug.com"],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true,
 }));
 
+app.options("*", cors());
 app.use(express.json()); // ✅ để đọc body JSON
 app.use(express.urlencoded({ extended: true })); // ✅ để đọc form-data urlencoded
 app.use('/uploads', express.static('uploads')); // ✅ phục vụ file ảnh upload tĩnh

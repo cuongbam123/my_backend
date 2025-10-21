@@ -1,4 +1,4 @@
-const { getGeminiReply } = require("./services/chatService");
+const { getGeminiReply } = require("./services/ChatService");
 
 function setupChatAI(io) {
     io.on("connection", (socket) => {

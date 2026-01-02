@@ -8,6 +8,7 @@ const productSchema = new Schema({
   description: { type: String },
   ingredients: { type: String }, // thành phần
   skinType:    { type: String, enum: ['all', 'dry', 'oily', 'sensitive', 'normal'], default: 'all' },
+  tags: [{ type: String }],
   stock:       { type: Number, default: 0 },
   expiryDate:  { type: Date }, // hạn sử dụng
   discount:    { type: Number, default: 0 }, // %

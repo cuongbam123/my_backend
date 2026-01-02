@@ -1,174 +1,314 @@
 const Product = require("../models/product");
-const GeminiService = require("./GeminiService");
+const ChatSession = require("../models/ChatSession");
+const OpenAIService = require("./OpenAIService");
 
 class ChatService {
   constructor() {
-    this.gemini = new GeminiService();
+    this.openai = new OpenAIService();
+    this.maxHistory = 12;
 
-    // Các từ khóa để nhận biết chào hỏi
-    this.greetings = ["hi", "hello", "helo", "chào", "xin chào", "hiii", "alo", "tôi cần tư vấn"];
-    
-    // Từ khóa liên quan sản phẩm
-    this.productKeywords = [
-      "trị", "mụn", "nám", "dưỡng tóc", "sữa rửa mặt", "tóc", "da", "kem chống nắng", "serum", "son",
-      "dầu", "tẩy", "nước hoa", "makeup", "nước dưỡng"
+    this.followUpTriggers = [
+      "rẻ", "giá thấp", "loại nào rẻ",
+      "so sánh", "khác nhau", "tốt hơn",
+      "còn hàng", "tồn kho"
     ];
+
+    this.vnProductKeywords = {
+      sunscreen: ["chong nang", "sunscreen", "spf"],
+      cleanser: ["rua mat", "cleanser"],
+      toner: ["toner", "hoa hong", "nước tẩy trang", "tẩy trang", "tay trang"],
+      serum: ["serum", "tinh chat"],
+      moisturizer: ["duong am", "kem duong"],
+      haircare: ["duong toc", "dau duong toc"],
+    };
   }
 
-  // 🔍 Kiểm tra câu có phải lời chào
-  isGreeting(text) {
-    return this.greetings.includes(text.trim().toLowerCase());
+  /* ================= UTIL ================= */
+
+  normalize(text) {
+    return (text || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\w\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
-  // 🔍 Kiểm tra câu có phải là câu hỏi về sản phẩm
-  isProductIntent(text) {
-    const lower = text.toLowerCase();
-    return this.productKeywords.some((k) => lower.includes(k));
+  detectSkinType(text) {
+    const t = this.normalize(text);
+    if (t.includes("da dau")) return "oily";
+    if (t.includes("da kho")) return "dry";
+    if (t.includes("nhay cam")) return "sensitive";
+    if (t.includes("da thuong")) return "normal";
+    return null;
   }
 
-  // 🔍 Tìm sản phẩm
-  // 🔍 Tìm sản phẩm thông minh hơn
-async searchProducts(text) {
-  const lower = text.toLowerCase();
+  detectPrice(text) {
+    const t = this.normalize(text);
+    const match = t.match(/(\d+)\s?(k|nghin|ngan)?/);
+    if (!match) return null;
+    return Number(match[1]) * 1000;
+  }
 
-  // Mapping các từ khoá → nhóm sản phẩm tương ứng
-  const intentMap = [
-    { keywords: ["kem chống nắng", "chống nắng", "sunscreen", "spf"], category: "Kem chống nắng" },
-    { keywords: ["mụn", "trị mụn", "mụn viêm"], category: "Trị mụn" },
-    { keywords: ["dưỡng tóc", "tóc khô", "rụng tóc"], category: "Dưỡng tóc" },
-    { keywords: ["serum", "tinh chất"], category: "Serum" },
-    { keywords: ["makeup", "trang điểm"], category: "Trang điểm" },
+  isFollowUp(text) {
+    const t = this.normalize(text);
+    return this.followUpTriggers.some(k => t.includes(k));
+  }
+
+  detectKeywords(text) {
+    const t = this.normalize(text);
+    for (const keywords of Object.values(this.vnProductKeywords)) {
+      if (keywords.some(k => t.includes(k))) return keywords;
+    }
+    return [];
+  }
+
+  /* ================= SESSION ================= */
+
+  async getOrCreateSession(sessionId) {
+    let session = await ChatSession.findOne({ sessionId });
+    if (!session) {
+      session = await ChatSession.create({
+        sessionId,
+        messages: [],
+        lastProducts: [],
+      });
+    }
+    return session;
+  }
+
+  async pushMessage(session, role, content) {
+    session.messages.push({ role, content });
+    if (session.messages.length > this.maxHistory) {
+      session.messages = session.messages.slice(-this.maxHistory);
+    }
+    await session.save();
+  }
+
+  /* ================= SEARCH ================= */
+
+  async searchProductsByKeywords(keywords, skinType, maxPrice) {
+    const regexList = keywords.map(k => new RegExp(k, "i"));
+
+    const query = {
+      $and: [
+        {
+          $or: [
+            { name: { $in: regexList } },
+            { description: { $in: regexList } },
+            { brand: { $in: regexList } },
+            { "category.name": { $in: regexList } },
+          ],
+        },
+      ],
+    };
+
+    if (skinType) {
+      query.$and.push({ $or: [{ skinType }, { skinType: "all" }] });
+    }
+
+    if (maxPrice) {
+      query.$and.push({ price: { $lte: maxPrice } });
+    }
+
+    return Product.find(query).populate("category").limit(6);
+  }
+
+  detectCompareIntent(text) {
+  const t = this.normalize(text);
+
+  const compareKeywords = [
+    "so sanh",
+    "so sánh",
+    "khac nhau",
+    "khác nhau",
+    "tot hon",
+    "tốt hơn",
+    "nen chon",
+    "nên chọn",
+    "loai nao hon",
+    "loại nào hơn"
   ];
 
-  // 1) Tìm nhóm sản phẩm theo từ khoá intent
-  const matchedIntent = intentMap.find(intent =>
-    intent.keywords.some(k => lower.includes(k))
-  );
+  return compareKeywords.some(k => t.includes(this.normalize(k)));
+}
 
-  // Nếu khớp → tìm theo danh mục trước (ưu tiên)
-  if (matchedIntent) {
-    const productsByCategory = await Product.find()
-      .populate("category")
-      .then(all =>
-        all.filter(p =>
-          p.category?.name?.toLowerCase() === matchedIntent.category.toLowerCase()
-        )
-      );
 
-    if (productsByCategory.length > 0) {
-      return productsByCategory;
+  /* ================= MAIN ================= */
+
+  async handleChat({ sessionId, message }) {
+    const session = await this.getOrCreateSession(sessionId);
+    const userMsg = this.normalize(message);
+
+    await this.pushMessage(session, "user", message);
+
+    /* ===== FOLLOW-UP ===== */
+    if (this.isFollowUp(userMsg) && session.lastProducts.length) {
+      const products = await Product.find({
+        _id: { $in: session.lastProducts },
+      });
+
+      if (userMsg.includes("re")) {
+        products.sort((a, b) => a.price - b.price);
+      }
+
+      const list = products.map(
+        (p, i) => `${i + 1}. ${p.name} — ${p.price.toLocaleString()}đ`
+      ).join("\n");
+
+      const reply = `Mình so sánh nhanh cho bạn nè 😊\n\n${list}`;
+      await this.pushMessage(session, "assistant", reply);
+
+      return { reply, productsFound: products.length };
     }
-  }
 
-  // 2) Nếu không → fallback: tìm theo tên / mô tả
-  const regex = new RegExp(text, "i");
-  let products = await Product.find({
-    $or: [{ name: regex }, { description: regex }]
-  }).populate("category");
+    /* ===== SEARCH MỚI ===== */
+    const skinType = this.detectSkinType(userMsg);
+    const maxPrice = this.detectPrice(userMsg);
+    const keywords = this.detectKeywords(userMsg);
 
-  // 3) Thử dò theo category name (không strict)
-  if (products.length === 0) {
-    const all = await Product.find().populate("category");
-    products = all.filter(p =>
-      p.category?.name?.toLowerCase().includes(lower)
+    if (!keywords.length) {
+      const reply =
+        "Bạn cho mình biết rõ hơn một chút nha 😊 Ví dụ: *kem chống nắng cho da dầu dưới 300k*";
+      await this.pushMessage(session, "assistant", reply);
+      return { reply, productsFound: 0 };
+    }
+
+    const products = await this.searchProductsByKeywords(
+      keywords,
+      skinType,
+      maxPrice
     );
-  }
 
-  return products;
-}
-
-
-  // 🧠 Gọi AI để viết lại công dụng đẹp hơn – KHÔNG đọc mô tả gốc
-  async generateUsageForMultipleProducts(products) {
-  try {
-    const list = products
-      .map((p, i) => `${i+1}. ${p.name} (Danh mục: ${p.category?.name})`)
-      .join("\n");
-
-    const prompt = `
-Bạn là chuyên gia mỹ phẩm.
-
-Hãy mô tả công dụng NGẮN GỌN cho từng sản phẩm dưới đây.
-Trả về đúng format sau:
-
-1. Công dụng viết gọn 1–2 câu
-2. Công dụng viết gọn 1–2 câu
-...
-
-DANH SÁCH SẢN PHẨM:
-${list}
-`;
-
-    const aiResponse = await this.gemini.requestGemini(prompt);
-    return aiResponse.split("\n").filter(x => x.trim());
-  } 
-  catch (err) {
-    console.error("Gemini Summary Error:", err);
-    return products.map(p => "Công dụng: Sản phẩm giúp chăm sóc và cải thiện hiệu quả.");
-  }
-}
-
-
-  // Format trả lời sản phẩm
-  async formatProducts(products) {
-  const usages = await this.generateUsageForMultipleProducts(products);
-
-  let result = "";
-
-  for (let i = 0; i < products.length; i++) {
-    const p = products[i];
-    const usage = usages[i] || "Cung cấp công dụng chăm sóc cơ bản.";
-
-    result += `✨ *${p.name}*\n`
-      + `💰 Giá: ${p.price.toLocaleString()}đ\n`
-      + `🏷 Danh mục: ${p.category?.name}\n`
-      + `📌 Công dụng: ${usage}\n\n`;
-  }
-
-  return result.trim();
-}
-
-  // MAIN CHAT LOGIC
-  async handleChat(message) {
-    try {
-      const userMsg = message.trim();
-
-      // ===============================
-      // 1) Lời chào
-      // ===============================
-      if (this.isGreeting(userMsg)) {
-        return "Xin chào bạn 👋!\nMình là trợ lý của HruCosmetics. Bạn muốn tìm sản phẩm theo nhu cầu nào ạ?";
-      }
-
-      // ===============================
-      // 2) Câu liên quan sản phẩm
-      // ===============================
-      if (this.isProductIntent(userMsg)) {
-        const products = await this.searchProducts(userMsg);
-
-        if (products.length === 0) {
-          return "Hiện tại mình chưa tìm thấy sản phẩm phù hợp 😥. Bạn có thể mô tả rõ hơn không?";
-        }
-
-        // Chỉ trả kết quả đầy đủ (nhưng không bao giờ trả ảnh)
-        return await this.formatProducts(products);
-      }
-
-      // ===============================
-      // 3) Không phải sản phẩm → hỏi AI
-      // ===============================
-      const aiReply = await this.gemini.requestGemini(`
-User: "${userMsg}"
-Hãy trả lời thân thiện như người thật.
-`);
-
-      return aiReply;
-
-    } catch (err) {
-      console.error("ChatService Error:", err);
-      return "❌ Xin lỗi, hệ thống đang gặp lỗi. Bạn thử lại giúp mình nhé!";
+    if (!products.length) {
+      const reply =
+        "Mình chưa tìm được sản phẩm phù hợp hoàn toàn 😥 Bạn thử nới rộng ngân sách hoặc cho mình biết loại da nhé!";
+      await this.pushMessage(session, "assistant", reply);
+      return { reply, productsFound: 0 };
     }
+
+    // ⭐ lưu ngữ cảnh
+    session.lastProducts = products.map(p => p._id);
+    await session.save();
+
+    const list = products.map(
+      (p, i) => `${i + 1}. ${p.name} — ${p.price.toLocaleString()}đ`
+    ).join("\n");
+
+    const reply = `✨ Mình gợi ý cho bạn nè:\n\n${list}\n\nBạn muốn **so sánh**, **lọc giá rẻ hơn**, hay **xem loại bán chạy** không? 😊`;
+
+    await this.pushMessage(session, "assistant", reply);
+
+    return { reply, productsFound: products.length };
   }
 }
 
 module.exports = ChatService;
+
+
+// const Product = require("../models/product");
+// const RecommendService = require("./RecommendService");
+// const OpenAIService = require("./OpenAIService");
+
+// class ChatService {
+//   async handleMessage({ message, userId, productId }) {
+
+//     // 1️⃣ GPT phân tích ý định
+//     const intentData = await OpenAIService.detectIntent(message);
+
+//     // ================= CHAT THƯỜNG =================
+//     if (intentData.intent === "chat") {
+//       const reply = await OpenAIService.normalChat(message);
+//       return {
+//         type: "chat",
+//         message: reply
+//       };
+//     }
+
+//     // ================= TƯ VẤN / TÌM SẢN PHẨM =================
+//     if (intentData.intent === "advice" || intentData.intent === "find") {
+
+//       let products = [];
+
+//       // Nếu user đang xem 1 sản phẩm → dùng recommendation
+//       if (productId) {
+//         products = await RecommendService.recommendMixed(productId, 5);
+//       }
+
+//       // Nếu chưa có hoặc không đủ → tìm theo nhu cầu
+//       if (!products.length) {
+//         products = await this.findProducts(intentData);
+//       }
+
+//       if (!products.length) {
+//         return {
+//           type: "chat",
+//           message: "Hiện shop chưa có sản phẩm phù hợp với nhu cầu của bạn 😥"
+//         };
+//       }
+
+//       // GPT chỉ được phép nói dựa trên products này
+//       const answer = await OpenAIService.productAdvice({
+//         userMessage: message,
+//         products
+//       });
+
+//       return {
+//         type: "product_advice",
+//         message: answer,
+//         products
+//       };
+//     }
+
+//     // ================= SO SÁNH =================
+//     if (intentData.intent === "compare") {
+//       const products = await this.findProducts(intentData);
+
+//       if (products.length < 2) {
+//         return {
+//           type: "chat",
+//           message: "Mình chưa tìm đủ sản phẩm để so sánh cho bạn 😥"
+//         };
+//       }
+
+//       const reply = await OpenAIService.compareProducts({
+//         userMessage: message,
+//         products
+//       });
+
+//       return {
+//         type: "compare",
+//         message: reply,
+//         products
+//       };
+//     }
+
+//     // ================= FALLBACK =================
+//     return {
+//       type: "chat",
+//       message: "Mình chưa hiểu rõ ý bạn, bạn nói lại giúp mình nha 😊"
+//     };
+//   }
+
+//   // ===== TÌM SẢN PHẨM TỪ DB =====
+//   async findProducts({ skinType, budget, keywords }) {
+//     const query = {};
+
+//     if (skinType) {
+//       query.skinType = { $regex: skinType, $options: "i" };
+//     }
+
+//     if (budget) {
+//       query.price = { $lte: budget };
+//     }
+
+//     if (keywords?.length) {
+//       query.name = { $regex: keywords.join("|"), $options: "i" };
+//     }
+
+//     return Product.find(query).limit(5).lean();
+//   }
+// }
+
+// module.exports = new ChatService();

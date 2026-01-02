@@ -38,7 +38,7 @@ module.exports = {
 
   create: async (req, res, next) => {
     try {
-      const { name, price, description, brand, category, ingredients, skinType, stock, expiryDate, discount } = req.body;
+      const { name, price, description, brand, category, ingredients, skinType, stock, expiryDate, discount, tags } = req.body;
 
       let image = "";
       if (req.file) {
@@ -57,6 +57,7 @@ module.exports = {
         stock,
         expiryDate,
         discount,
+        tags: normalizeTags(tags),
       });
 
       res.status(201).json(newProduct);
@@ -68,6 +69,7 @@ module.exports = {
   update: async (req, res, next) => {
     try {
       const data = req.body;
+      if ("tags" in data) data.tags = normalizeTags(data.tags);
       if (req.file) {
         data.image = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
       }

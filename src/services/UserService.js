@@ -27,7 +27,7 @@ const updateUser = async (data) => {
     if (data.password) user.password = data.password;
     if (data.email)    user.email = data.email;
     if (data.phone) user.phone = data.phone;
-    if (data.birthday)   user.dob = data.dob;
+    if (data.birthday)   user.birthday = data.birthday;
     if (data.role)     user.role = data.role;
 
     await user.save();
